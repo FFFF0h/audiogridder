@@ -10,6 +10,7 @@
 
 #include "../JuceLibraryCode/JuceHeader.h"
 #include "Utils.hpp"
+#include <mutex>
 
 namespace e47 {
 

@@ -12,6 +12,7 @@
 #include "Utils.hpp"
 
 #include <thread>
+#include <mutex>
 
 namespace e47 {
 
