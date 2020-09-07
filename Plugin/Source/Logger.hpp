@@ -10,9 +10,6 @@
 
 #include "../JuceLibraryCode/JuceHeader.h"
 
-#include <queue>
-#include <mutex>
-
 namespace e47 {
 class AGLogger : public Thread {
   public:
