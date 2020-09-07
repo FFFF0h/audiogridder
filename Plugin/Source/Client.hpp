@@ -8,12 +8,14 @@
 #ifndef Client_hpp
 #define Client_hpp
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
+
 #include "Message.hpp"
 #include "ServerPlugin.hpp"
 #include "Defaults.hpp"
 #include "Utils.hpp"
 #include "Metrics.hpp"
+#include "ImageReader.hpp"
 
 #include <boost/lockfree/spsc_queue.hpp>
 
@@ -75,14 +77,15 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
     };
 
     int NUM_OF_BUFFERS = DEFAULT_NUM_OF_BUFFERS;
+    int LOAD_PLUGIN_TIMEOUT = DEFAULT_LOAD_PLUGIN_TIMEOUT;
 
     void run() override;
 
-    void setServer(const String& host, int port = DEFAULT_SERVER_PORT);
+    void setServer(const ServerString& srv);
     String getServerHost();
     String getServerHostAndID();
     int getServerPort();
-    int getId() const { return m_id; }
+    int getServerID();
     int getChannelsIn() const { return m_channelsIn; }
     int getChannelsOut() const { return m_channelsOut; }
     double getSampleRate() const { return m_rate; }
@@ -109,25 +112,35 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
     };
     friend dbglock;
 
+    bool audioLock() {
+        if (m_clientMtx.try_lock()) {
+            if (isReadyLockFree()) {
+                m_clientMtxId = 1;
+                return true;
+            }
+            m_clientMtx.unlock();
+        }
+        return false;
+    }
+
+    void audioUnlock() {
+        if (m_clientMtxId == 1) {
+            m_clientMtxId = 0;
+            m_clientMtx.unlock();
+        }
+    }
+
     void send(AudioBuffer<float>& buffer, MidiBuffer& midi, AudioPlayHead::CurrentPositionInfo& posInfo) {
-        dbglock lock(*this, 1);
         m_audioStreamerF->send(buffer, midi, posInfo);
     }
 
     void send(AudioBuffer<double>& buffer, MidiBuffer& midi, AudioPlayHead::CurrentPositionInfo& posInfo) {
-        dbglock lock(*this, 2);
         m_audioStreamerD->send(buffer, midi, posInfo);
     }
 
-    void read(AudioBuffer<float>& buffer, MidiBuffer& midi) {
-        dbglock lock(*this, 3);
-        m_audioStreamerF->read(buffer, midi);
-    }
+    void read(AudioBuffer<float>& buffer, MidiBuffer& midi) { m_audioStreamerF->read(buffer, midi); }
 
-    void read(AudioBuffer<double>& buffer, MidiBuffer& midi) {
-        dbglock lock(*this, 4);
-        m_audioStreamerD->read(buffer, midi);
-    }
+    void read(AudioBuffer<double>& buffer, MidiBuffer& midi) { m_audioStreamerD->read(buffer, midi); }
 
     const auto& getPlugins() const { return m_plugins; }
     Image getPluginScreen();  // create copy
@@ -147,6 +160,7 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
     void editPlugin(int idx);
     void hidePlugin();
     MemoryBlock getPluginSettings(int idx);
+    void setPluginSettings(int idx, String settings);
     void bypassPlugin(int idx);
     void unbypassPlugin(int idx);
     void exchangePlugins(int idxA, int idxB);
@@ -155,6 +169,8 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
 
     float getParameterValue(int idx, int paramIdx);
     void setParameterValue(int idx, int paramIdx, float val);
+
+    void updateScreenCaptureArea(int val);
 
     // MouseListener
     void mouseMove(const MouseEvent& event) override;
@@ -174,9 +190,9 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
   private:
     AudioGridderAudioProcessor* m_processor;
     std::mutex m_srvMtx;
-    String m_srvHost = "127.0.0.1";
+    String m_srvHost = "";
     int m_srvPort = DEFAULT_SERVER_PORT;
-    int m_id = 0;
+    int m_srvId = 0;
     bool m_needsReconnect = false;
     int m_channelsIn = 0;
     int m_channelsOut = 0;
@@ -198,6 +214,7 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
       public:
         ScreenReceiver(Client* clnt, StreamingSocket* sock) : Thread("ScreenWorker"), m_client(clnt), m_socket(sock) {
             setLogTagSource(clnt);
+            m_imgReader.setLogTagSource(clnt);
         }
         ~ScreenReceiver() {
             signalThreadShouldExit();
@@ -209,6 +226,7 @@ class Client : public Thread, public LogTag, public MouseListener, public KeyLis
         Client* m_client;
         StreamingSocket* m_socket;
         std::shared_ptr<Image> m_image;
+        ImageReader m_imgReader;
     };
 
     friend ScreenReceiver;

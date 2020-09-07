@@ -7,12 +7,14 @@
 
 #pragma once
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
 #include "PluginButton.hpp"
 #include "PluginProcessor.hpp"
 #include "Utils.hpp"
 
-class AudioGridderAudioProcessorEditor : public AudioProcessorEditor, public PluginButton::Listener {
+class AudioGridderAudioProcessorEditor : public AudioProcessorEditor,
+                                         public PluginButton::Listener,
+                                         public Button::Listener {
   public:
     AudioGridderAudioProcessorEditor(AudioGridderAudioProcessor&);
     ~AudioGridderAudioProcessorEditor() override;
@@ -20,6 +22,7 @@ class AudioGridderAudioProcessorEditor : public AudioProcessorEditor, public Plu
     void paint(Graphics&) override;
     void resized() override;
     void buttonClicked(Button* button, const ModifierKeys& modifiers) override;
+    void buttonClicked(Button* button) override;
     void focusOfChildComponentChanged(FocusChangeType cause) override;
 
     void mouseUp(const MouseEvent& event) override;  // server icon
@@ -29,6 +32,10 @@ class AudioGridderAudioProcessorEditor : public AudioProcessorEditor, public Plu
   private:
     AudioGridderAudioProcessor& m_processor;
 
+    const int SCREENTOOLS_HEIGHT = 17;
+    const int SCREENTOOLS_MARGIN = 3;
+    const int SCREENTOOLS_AB_WIDTH = 12;
+
     std::vector<std::unique_ptr<PluginButton>> m_pluginButtons;
     PluginButton m_newPluginButton;
     ImageComponent m_pluginScreen;
@@ -36,9 +43,20 @@ class AudioGridderAudioProcessorEditor : public AudioProcessorEditor, public Plu
     Label m_srvLabel, m_versionLabel;
     bool m_connected = false;
 
+    // screen tools
+    TextButton m_stPlus, m_stMinus, m_stA, m_stB;
+    int m_currentActiveAB = -1;
+    TextButton* m_hilightedStButton = nullptr;
+
     Button* addPluginButton(const String& id, const String& name);
     std::vector<Button*> getPluginButtons(const String& id);
     int getPluginIndex(const String& name);
+
+    void initStButtons();
+    void enableStButton(TextButton* b);
+    void disableStButton(TextButton* b);
+    void hilightStButton(TextButton* b);
+    bool isHilightedStButton(TextButton* b);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioGridderAudioProcessorEditor)
 };

@@ -11,20 +11,81 @@
 
 namespace e47 {
 
-std::mutex ProcessorChain::m_pluginLoaderMtx;
+std::mutex AGProcessor::m_pluginLoaderMtx;
+
+// Sync version.
+std::shared_ptr<AudioPluginInstance> AGProcessor::loadPlugin(PluginDescription& plugdesc, double sampleRate,
+                                                             int blockSize) {
+    String err;
+    AudioPluginFormatManager plugmgr;
+    plugmgr.addDefaultFormats();
+    std::lock_guard<std::mutex> lock(m_pluginLoaderMtx);  // don't load plugins in parallel
+    auto inst =
+        std::shared_ptr<AudioPluginInstance>(plugmgr.createPluginInstance(plugdesc, sampleRate, blockSize, err));
+    if (nullptr == inst) {
+        auto getLogTag = [] { return "processorchain"; };
+        logln("failed loading plugin " << plugdesc.fileOrIdentifier << ": " << err);
+    }
+    return inst;
+}
+
+std::shared_ptr<AudioPluginInstance> AGProcessor::loadPlugin(const String& id, double sampleRate, int blockSize) {
+    auto& pluglist = getApp()->getPluginList();
+    auto plugdesc = pluglist.getTypeForIdentifierString(id);
+    // try fallback
+    if (nullptr == plugdesc) {
+        plugdesc = pluglist.getTypeForFile(id);
+    }
+    if (nullptr != plugdesc) {
+        return loadPlugin(*plugdesc, sampleRate, blockSize);
+    } else {
+        auto getLogTag = [] { return "processorchain"; };
+        logln("failed to find plugin descriptor");
+    }
+    return nullptr;
+}
+
+bool AGProcessor::load() {
+    bool loaded = false;
+    std::shared_ptr<AudioPluginInstance> p;
+    {
+        std::lock_guard<std::mutex> lock(m_pluginMtx);
+        p = m_plugin;
+    }
+    if (nullptr == p) {
+        p = loadPlugin(m_id, m_sampleRate, m_blockSize);
+        if (nullptr != p) {
+            if (m_chain.initPluginInstance(p)) {
+                loaded = true;
+                std::lock_guard<std::mutex> lock(m_pluginMtx);
+                m_plugin = p;
+            }
+        }
+    }
+    return loaded;
+}
+
+void AGProcessor::unload() {
+    std::shared_ptr<AudioPluginInstance> p;
+    {
+        std::lock_guard<std::mutex> lock(m_pluginMtx);
+        p = m_plugin;
+        m_plugin.reset();
+    }
+}
 
 void ProcessorChain::prepareToPlay(double sampleRate, int maximumExpectedSamplesPerBlock) {
     setRateAndBufferSizeDetails(sampleRate, maximumExpectedSamplesPerBlock);
     std::lock_guard<std::mutex> lock(m_processors_mtx);
-    for (auto& p : m_processors) {
-        p->prepareToPlay(sampleRate, maximumExpectedSamplesPerBlock);
+    for (auto& proc : m_processors) {
+        proc->prepareToPlay(sampleRate, maximumExpectedSamplesPerBlock);
     }
 }
 
 void ProcessorChain::releaseResources() {
     std::lock_guard<std::mutex> lock(m_processors_mtx);
-    for (auto& p : m_processors) {
-        p->releaseResources();
+    for (auto& proc : m_processors) {
+        proc->releaseResources();
     }
 }
 
@@ -77,7 +138,8 @@ bool ProcessorChain::updateChannels(int channelsIn, int channelsOut) {
     std::lock_guard<std::mutex> lock(m_processors_mtx);
     m_extraChannels = 0;
     for (auto& proc : m_processors) {
-        if (!setProcessorBusesLayout(proc)) {
+        auto p = proc->getPlugin();
+        if (nullptr == p || !setProcessorBusesLayout(p)) {
             return false;
         }
     }
@@ -117,71 +179,41 @@ int ProcessorChain::getExtraChannels() {
     return m_extraChannels;
 }
 
-// Sync version.
-std::shared_ptr<AudioPluginInstance> ProcessorChain::loadPlugin(PluginDescription& plugdesc, double sampleRate,
-                                                                int blockSize) {
-    String err;
-    AudioPluginFormatManager plugmgr;
-    plugmgr.addDefaultFormats();
-    std::lock_guard<std::mutex> lock(m_pluginLoaderMtx);  // don't load plugins in parallel
-    auto inst =
-        std::shared_ptr<AudioPluginInstance>(plugmgr.createPluginInstance(plugdesc, sampleRate, blockSize, err));
-    if (nullptr == inst) {
-        auto getLogTag = [] { return "processorchain"; };
-        logln("failed loading plugin " << plugdesc.fileOrIdentifier << ": " << err);
+bool ProcessorChain::initPluginInstance(std::shared_ptr<AudioPluginInstance> inst) {
+    if (!setProcessorBusesLayout(inst)) {
+        logln("I/O layout (" << getMainBusNumInputChannels() << "," << getMainBusNumOutputChannels() << " +"
+                             << m_extraChannels << ") not supported by plugin: " << inst->getName());
+        return false;
     }
-    return inst;
-}
-
-std::shared_ptr<AudioPluginInstance> ProcessorChain::loadPlugin(const String& id, double sampleRate, int blockSize) {
-    auto& pluglist = getApp()->getPluginList();
-    auto plugdesc = pluglist.getTypeForIdentifierString(id);
-    // try fallback
-    if (nullptr == plugdesc) {
-        plugdesc = pluglist.getTypeForFile(id);
+    AudioProcessor::ProcessingPrecision prec = AudioProcessor::singlePrecision;
+    if (isUsingDoublePrecision() && supportsDoublePrecisionProcessing()) {
+        if (inst->supportsDoublePrecisionProcessing()) {
+            prec = AudioProcessor::doublePrecision;
+        } else {
+            logln("host wants double precission but plugin '" << inst->getName() << "' does not support it");
+        }
     }
-    if (nullptr != plugdesc) {
-        return loadPlugin(*plugdesc, sampleRate, blockSize);
+    inst->setProcessingPrecision(prec);
+    inst->prepareToPlay(getSampleRate(), getBlockSize());
+    inst->setPlayHead(getPlayHead());
+    if (prec == AudioProcessor::doublePrecision) {
+        preProcessBlocks<double>(inst);
     } else {
-        auto getLogTag = [] { return "processorchain"; };
-        logln("failed to find plugin descriptor");
+        preProcessBlocks<float>(inst);
     }
-    return nullptr;
+    return true;
 }
 
 bool ProcessorChain::addPluginProcessor(const String& id) {
-    auto inst = loadPlugin(id, getSampleRate(), getBlockSize());
-    if (nullptr != inst) {
-        if (!setProcessorBusesLayout(inst)) {
-            logln("I/O layout (" << getMainBusNumInputChannels() << "," << getMainBusNumOutputChannels() << " +"
-                                 << m_extraChannels << ") not supported by plugin: " << inst->getName() << " (" << id
-                                 << ")");
-            return false;
-        }
-        AudioProcessor::ProcessingPrecision prec = AudioProcessor::singlePrecision;
-        if (isUsingDoublePrecision() && supportsDoublePrecisionProcessing()) {
-            if (inst->supportsDoublePrecisionProcessing()) {
-                prec = AudioProcessor::doublePrecision;
-            } else {
-                logln("host wants double precission but plugin '" << inst->getName() << "' (" << id
-                                                                  << ") does not support it");
-            }
-        }
-        inst->setProcessingPrecision(prec);
-        inst->prepareToPlay(getSampleRate(), getBlockSize());
-        inst->setPlayHead(getPlayHead());
-        if (prec == AudioProcessor::doublePrecision) {
-            preProcessBlocks<double>(inst);
-        } else {
-            preProcessBlocks<float>(inst);
-        }
-        addProcessor(inst);
+    auto proc = std::make_shared<AGProcessor>(*this, id, getSampleRate(), getBlockSize());
+    if (proc->load()) {
+        addProcessor(proc);
         return true;
     }
     return false;
 }
 
-void ProcessorChain::addProcessor(std::shared_ptr<AudioPluginInstance> processor) {
+void ProcessorChain::addProcessor(std::shared_ptr<AGProcessor> processor) {
     std::lock_guard<std::mutex> lock(m_processors_mtx);
     m_processors.push_back(processor);
     updateNoLock();
@@ -199,32 +231,44 @@ void ProcessorChain::delProcessor(int idx) {
     updateNoLock();
 }
 
+void ProcessorChain::update() {
+    std::lock_guard<std::mutex> lock(m_processors_mtx);
+    updateNoLock();
+}
+
 void ProcessorChain::updateNoLock() {
     int latency = 0;
     bool supportsDouble = true;
     m_extraChannels = 0;
     for (auto& proc : m_processors) {
-        latency += proc->getLatencySamples();
-        if (!proc->supportsDoublePrecisionProcessing()) {
-            supportsDouble = false;
+        auto p = proc->getPlugin();
+        if (nullptr != p && !p->isSuspended()) {
+            latency += p->getLatencySamples();
+            if (!p->supportsDoublePrecisionProcessing()) {
+                supportsDouble = false;
+            }
+            int extraInChannels = p->getTotalNumInputChannels() - p->getMainBusNumInputChannels();
+            int extraOutChannels = p->getTotalNumOutputChannels() - p->getMainBusNumOutputChannels();
+            m_extraChannels = jmax(m_extraChannels, extraInChannels, extraOutChannels);
         }
-        int extraInChannels = proc->getTotalNumInputChannels() - proc->getMainBusNumInputChannels();
-        int extraOutChannels = proc->getTotalNumOutputChannels() - proc->getMainBusNumOutputChannels();
-        m_extraChannels = jmax(m_extraChannels, extraInChannels, extraOutChannels);
     }
     if (latency != getLatencySamples()) {
         logln("updating latency samples to " << latency);
         setLatencySamples(latency);
     }
     m_supportsDoublePrecission = supportsDouble;
-    if (m_processors.size() > 0) {
-        m_tailSecs = m_processors.back()->getTailLengthSeconds();
+    auto it = m_processors.rbegin();
+    while (it != m_processors.rend() && (*it)->isSuspended()) {
+        it++;
+    }
+    if (it != m_processors.rend()) {
+        m_tailSecs = (*it)->getTailLengthSeconds();
     } else {
         m_tailSecs = 0.0;
     }
 }
 
-std::shared_ptr<AudioPluginInstance> ProcessorChain::getProcessor(int index) {
+std::shared_ptr<AGProcessor> ProcessorChain::getProcessor(int index) {
     std::lock_guard<std::mutex> lock(m_processors_mtx);
     if (index > -1 && as<size_t>(index) < m_processors.size()) {
         return m_processors[as<size_t>(index)];
@@ -242,9 +286,12 @@ void ProcessorChain::exchangeProcessors(int idxA, int idxB) {
 float ProcessorChain::getParameterValue(int idx, int paramIdx) {
     std::lock_guard<std::mutex> lock(m_processors_mtx);
     if (idx > -1 && as<size_t>(idx) < m_processors.size()) {
-        for (auto& p : m_processors[as<size_t>(idx)]->getParameters()) {
-            if (paramIdx == p->getParameterIndex()) {
-                return p->getValue();
+        auto p = m_processors[as<size_t>(idx)]->getPlugin();
+        if (nullptr != p) {
+            for (auto& param : p->getParameters()) {
+                if (paramIdx == param->getParameterIndex()) {
+                    return param->getValue();
+                }
             }
         }
     }
@@ -261,13 +308,17 @@ String ProcessorChain::toString() {
     String ret;
     std::lock_guard<std::mutex> lock(m_processors_mtx);
     bool first = true;
-    for (auto& p : m_processors) {
+    for (auto& proc : m_processors) {
         if (!first) {
             ret << " > ";
         } else {
             first = false;
         }
-        ret << p->getName();
+        if (proc->isSuspended()) {
+            ret << "<bypassed>";
+        } else {
+            ret << proc->getName();
+        }
     }
     return ret;
 }

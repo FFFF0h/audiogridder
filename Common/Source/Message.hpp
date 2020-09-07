@@ -22,12 +22,35 @@ using json = nlohmann::json;
 struct MessageHelper {
     enum ErrorCode { E_NONE, E_DATA, E_TIMEOUT, E_STATE, E_SYSCALL, E_SIZE };
 
+    static String errorCodeToString(ErrorCode ec) {
+        switch (ec) {
+            case E_NONE:
+                return "E_NONE";
+                break;
+            case E_DATA:
+                return "E_DATA";
+                break;
+            case E_TIMEOUT:
+                return "E_TIMEOUT";
+                break;
+            case E_STATE:
+                return "E_STATE";
+                break;
+            case E_SYSCALL:
+                return "E_SYSCALL";
+                break;
+            case E_SIZE:
+                return "E_SIZE";
+                break;
+        }
+    }
+
     struct Error {
         ErrorCode code = E_NONE;
         String str = "";
         String toString() const {
             String ret = "EC=";
-            ret << code;
+            ret << errorCodeToString(code);
             ret << " STR=" << str;
             return ret;
         }
@@ -177,14 +200,14 @@ class AudioMessage {
                     return false;
                 }
             }
-            const uint8* midiData;
             MidiHeader midiHdr;
-            MidiBuffer::Iterator midiIt(midi);
-            while (midiIt.getNextEvent(midiData, midiHdr.size, midiHdr.sampleNumber)) {
+            for (auto midiIt = midi.begin(); midiIt != midi.end(); midiIt++) {
+                midiHdr.size = (*midiIt).numBytes;
+                midiHdr.sampleNumber = (*midiIt).samplePosition;
                 if (!send(socket, reinterpret_cast<const char*>(&midiHdr), sizeof(midiHdr))) {
                     return false;
                 }
-                if (!send(socket, reinterpret_cast<const char*>(midiData), midiHdr.size)) {
+                if (!send(socket, reinterpret_cast<const char*>((*midiIt).data), midiHdr.size)) {
                     return false;
                 }
             }
@@ -212,14 +235,14 @@ class AudioMessage {
                     return false;
                 }
             }
-            const uint8* midiData;
             MidiHeader midiHdr;
-            MidiBuffer::Iterator midiIt(midi);
-            while (midiIt.getNextEvent(midiData, midiHdr.size, midiHdr.sampleNumber)) {
+            for (auto midiIt = midi.begin(); midiIt != midi.end(); midiIt++) {
+                midiHdr.size = (*midiIt).numBytes;
+                midiHdr.sampleNumber = (*midiIt).samplePosition;
                 if (!send(socket, reinterpret_cast<const char*>(&midiHdr), sizeof(midiHdr))) {
                     return false;
                 }
-                if (!send(socket, reinterpret_cast<const char*>(midiData), midiHdr.size)) {
+                if (!send(socket, reinterpret_cast<const char*>((*midiIt).data), midiHdr.size)) {
                     return false;
                 }
             }
@@ -529,6 +552,7 @@ class ScreenCapture : public Payload {
     struct hdr_t {
         int width;
         int height;
+        double scale;
         size_t size;
     };
     hdr_t* hdr;
@@ -536,10 +560,11 @@ class ScreenCapture : public Payload {
 
     ScreenCapture() : Payload(Type) { realign(); }
 
-    void setImage(int width, int height, const void* p, size_t size) {
+    void setImage(int width, int height, double scale, const void* p, size_t size) {
         setSize(as<int>(sizeof(hdr_t) + size));
         hdr->width = width;
         hdr->height = height;
+        hdr->scale = scale;
         hdr->size = size;
         if (nullptr != p) {
             memcpy(data, p, size);
@@ -574,15 +599,21 @@ class GetPluginSettings : public NumberPayload {
     GetPluginSettings() : NumberPayload(Type) {}
 };
 
-class PluginSettings : public BinaryPayload {
+class SetPluginSettings : public NumberPayload {
   public:
     static constexpr int Type = 11;
+    SetPluginSettings() : NumberPayload(Type) {}
+};
+
+class PluginSettings : public BinaryPayload {
+  public:
+    static constexpr int Type = 12;
     PluginSettings() : BinaryPayload(Type) {}
 };
 
 class Key : public BinaryPayload {
   public:
-    static constexpr int Type = 12;
+    static constexpr int Type = 13;
     Key() : BinaryPayload(Type) {}
 
     const uint16_t* getKeyCodes() const { return reinterpret_cast<const uint16_t*>(data); }
@@ -591,13 +622,13 @@ class Key : public BinaryPayload {
 
 class BypassPlugin : public NumberPayload {
   public:
-    static constexpr int Type = 13;
+    static constexpr int Type = 14;
     BypassPlugin() : NumberPayload(Type) {}
 };
 
 class UnbypassPlugin : public NumberPayload {
   public:
-    static constexpr int Type = 14;
+    static constexpr int Type = 15;
     UnbypassPlugin() : NumberPayload(Type) {}
 };
 
@@ -608,19 +639,19 @@ struct exchange_t {
 
 class ExchangePlugins : public DataPayload<exchange_t> {
   public:
-    static constexpr int Type = 15;
+    static constexpr int Type = 16;
     ExchangePlugins() : DataPayload<exchange_t>(Type) {}
 };
 
 class RecentsList : public StringPayload {
   public:
-    static constexpr int Type = 16;
+    static constexpr int Type = 17;
     RecentsList() : StringPayload(Type) {}
 };
 
 class Parameters : public JsonPayload {
   public:
-    static constexpr int Type = 17;
+    static constexpr int Type = 18;
     Parameters() : JsonPayload(Type) {}
 };
 
@@ -632,7 +663,7 @@ struct parametervalue_t {
 
 class ParameterValue : public DataPayload<parametervalue_t> {
   public:
-    static constexpr int Type = 18;
+    static constexpr int Type = 19;
     ParameterValue() : DataPayload<parametervalue_t>(Type) {}
 };
 
@@ -643,13 +674,13 @@ struct getparametervalue_t {
 
 class GetParameterValue : public DataPayload<getparametervalue_t> {
   public:
-    static constexpr int Type = 19;
+    static constexpr int Type = 20;
     GetParameterValue() : DataPayload<getparametervalue_t>(Type) {}
 };
 
 class Presets : public StringPayload {
   public:
-    static constexpr int Type = 20;
+    static constexpr int Type = 21;
     Presets() : StringPayload(Type) {}
 };
 
@@ -660,8 +691,14 @@ struct preset_t {
 
 class Preset : public DataPayload<preset_t> {
   public:
-    static constexpr int Type = 21;
+    static constexpr int Type = 22;
     Preset() : DataPayload<preset_t>(Type) {}
+};
+
+class UpdateScreenCaptureArea : public NumberPayload {
+  public:
+    static constexpr int Type = 23;
+    UpdateScreenCaptureArea() : NumberPayload(Type) {}
 };
 
 template <typename T>
@@ -687,38 +724,36 @@ class Message {
                 if (e47::read(socket, &hdr, sizeof(hdr))) {
                     auto t = T::Type;
                     if (t > 0 && hdr.type != t) {
-                        std::cerr << "invalid message type " << hdr.type << " (" << t << " expected)" << std::endl;
                         success = false;
-                        MessageHelper::seterr(e, MessageHelper::E_DATA);
+                        String estr;
+                        estr << "invalid message type " << hdr.type << " (" << t << " expected)";
+                        MessageHelper::seterr(e, MessageHelper::E_DATA, estr);
                     } else {
                         payload.setType(hdr.type);
                         if (hdr.size > 0) {
                             if (hdr.size > MAX_SIZE) {
-                                std::cerr << "max size of " << MAX_SIZE << " bytes exceeded (" << hdr.size << " bytes)"
-                                          << std::endl;
                                 success = false;
-                                MessageHelper::seterr(e, MessageHelper::E_DATA);
+                                String estr;
+                                estr << "max size of " << MAX_SIZE << " bytes exceeded (" << hdr.size << " bytes)";
+                                MessageHelper::seterr(e, MessageHelper::E_DATA, estr);
                             } else {
                                 if (payload.getSize() != hdr.size) {
                                     payload.setSize(hdr.size);
                                 }
                                 if (!e47::read(socket, payload.getData(), hdr.size)) {
-                                    std::cerr << "failed to read message body" << std::endl;
                                     success = false;
-                                    MessageHelper::seterr(e, MessageHelper::E_DATA);
+                                    MessageHelper::seterr(e, MessageHelper::E_DATA, "failed to read message body");
                                 }
                             }
                         }
                     }
                 } else {
-                    std::cerr << "failed to read message header" << std::endl;
                     success = false;
-                    MessageHelper::seterr(e, MessageHelper::E_DATA);
+                    MessageHelper::seterr(e, MessageHelper::E_DATA, "failed to read message header");
                 }
             } else if (ret < 0) {
-                std::cerr << "failed to wait for message header" << std::endl;
                 success = false;
-                MessageHelper::seterr(e, MessageHelper::E_SYSCALL);
+                MessageHelper::seterr(e, MessageHelper::E_SYSCALL, "failed to wait for message header");
             } else {
                 success = false;
                 MessageHelper::seterr(e, MessageHelper::E_TIMEOUT);
@@ -776,17 +811,25 @@ class MessageFactory {
         return nullptr;
     }
 
-    static std::shared_ptr<Result> getResult(StreamingSocket* socket, int retry = 5) {
+    static std::shared_ptr<Result> getResult(StreamingSocket* socket, int retry = 5,
+                                             MessageHelper::Error* e = nullptr) {
         if (nullptr != socket) {
             auto msg = std::make_shared<Message<Result>>();
-            MessageHelper::Error e;
+            MessageHelper::Error err;
             do {
-                if (msg->read(socket, &e)) {
+                if (msg->read(socket, &err)) {
                     auto res = std::make_shared<Result>();
                     *res = std::move(msg->payload);
                     return res;
                 }
-            } while (retry-- > 0 && e.code == MessageHelper::E_TIMEOUT);
+            } while (retry-- > 0 && err.code == MessageHelper::E_TIMEOUT);
+            if (nullptr != e) {
+                *e = err;
+                String m = "unable to retrieve result message after ";
+                m << retry;
+                m << " attempts";
+                MessageHelper::seterrstr(e, m);
+            }
         }
         return nullptr;
     }

@@ -7,6 +7,7 @@
 
 #include "App.hpp"
 #include "Server.hpp"
+#include "Screen.h"
 
 #ifdef JUCE_WINDOWS
 #include "MiniDump.hpp"
@@ -46,7 +47,7 @@ void App::initialise(const String& commandLineParameters) {
         case SCAN:
             logName << "Scan_";
             break;
-        default:
+        case SERVER:
             break;
     }
 #ifdef JUCE_WINDOWS
@@ -85,6 +86,13 @@ void App::initialise(const String& commandLineParameters) {
             showSplashWindow();
             setSplashInfo("Starting server...");
             m_menuWindow = std::make_unique<MenuBarWindow>(this);
+#ifdef JUCE_MAC
+            if (!askForAccessibilityPermission()) {
+                AlertWindow::showMessageBox(
+                    AlertWindow::WarningIcon, "Warning",
+                    "AudioGridder needs the Accessibility permission to remote control plugins.", "OK");
+            }
+#endif
             m_server = std::make_unique<Server>();
             m_server->startThread();
             break;
@@ -92,28 +100,49 @@ void App::initialise(const String& commandLineParameters) {
 #ifdef JUCE_MAC
             Process::setDockIconVisible(false);
 #endif
-            ChildProcess proc;
-            StringArray proc_args;
-            proc_args.add(File::getSpecialLocation(File::currentExecutableFile).getFullPathName());
-            proc_args.add("-server");
-            uint32 ec = 0;
-            do {
-                if (proc.start(proc_args)) {
-                    while (proc.isRunning()) {
-                        Thread::sleep(100);
+            m_child = std::make_unique<std::thread>([this] {
+                ChildProcess proc;
+                StringArray proc_args;
+                proc_args.add(File::getSpecialLocation(File::currentExecutableFile).getFullPathName());
+                proc_args.add("-server");
+                uint32 ec = 0;
+                bool done = false;
+                do {
+                    if (proc.start(proc_args)) {
+                        while (proc.isRunning()) {
+                            Thread::sleep(100);
+                            if (m_stopChild) {
+                                logln("killing child process");
+                                proc.kill();
+                                proc.waitForProcessToFinish(-1);
+                                File serverRunFile(SERVER_RUN_FILE);
+                                if (serverRunFile.exists()) {
+                                    serverRunFile.deleteFile();
+                                }
+                                done = true;
+                                break;
+                            }
+                        }
+                        ec = proc.getExitCode();
+                        if (ec != 0) {
+                            logln("error: server failed with exit code " << as<int>(ec));
+                        }
+                        File serverRunFile(SERVER_RUN_FILE);
+                        if (serverRunFile.exists()) {
+                            logln("error: server did non shutdown properly");
+                            serverRunFile.deleteFile();
+                        } else {
+                            done = true;
+                        }
+                    } else {
+                        logln("error: failed to start server process");
+                        setApplicationReturnValue(1);
+                        quit();
+                        done = true;
                     }
-                    ec = proc.getExitCode();
-                    if (ec != 0) {
-                        logln("error: server failed with exit code " << as<int>(ec));
-                    }
-                } else {
-                    logln("error: failed to start server process");
-                    setApplicationReturnValue(1);
-                    quit();
-                    ec = 0;
-                }
-            } while (ec != 0);
-            quit();
+                } while (!done);
+                quit();
+            });
             break;
     }
     logln("initialise complete");
@@ -125,6 +154,12 @@ void App::shutdown() {
         m_server->shutdown();
         m_server->waitForThreadToExit(-1);
         m_server.reset();
+    }
+    if (m_child != nullptr) {
+        m_stopChild = true;
+        if (m_child->joinable()) {
+            m_child->join();
+        }
     }
     Logger::setCurrentLogger(nullptr);
     delete m_logger;
@@ -155,7 +190,7 @@ void App::restartServer() {
 
 const KnownPluginList& App::getPluginList() { return m_server->getPluginList(); }
 
-void App::showEditor(std::shared_ptr<AudioProcessor> proc, Thread::ThreadID tid, WindowCaptureCallback func) {
+void App::showEditor(std::shared_ptr<AGProcessor> proc, Thread::ThreadID tid, WindowCaptureCallbackNative func) {
     if (proc->hasEditor()) {
         std::lock_guard<std::mutex> lock(m_windowMtx);
         forgetEditorIfNeeded();
@@ -166,8 +201,26 @@ void App::showEditor(std::shared_ptr<AudioProcessor> proc, Thread::ThreadID tid,
         }
         m_windowOwner = tid;
         m_windowProc = proc;
-        m_windowFunc = func;
-        m_window = std::make_unique<ProcessorWindow>(m_windowProc, m_windowFunc);
+        m_windowFuncNative = func;
+        m_window = std::make_unique<ProcessorWindow>(m_windowProc, m_windowFuncNative);
+    } else {
+        logln("show editor failed: '" << proc->getName() << "' has no editor");
+    }
+}
+
+void App::showEditor(std::shared_ptr<AGProcessor> proc, Thread::ThreadID tid, WindowCaptureCallbackFFmpeg func) {
+    if (proc->hasEditor()) {
+        std::lock_guard<std::mutex> lock(m_windowMtx);
+        forgetEditorIfNeeded();
+        if (m_window != nullptr) {
+            logln("show editor: resetting existing processor window");
+            m_window->setVisible(false);
+            m_window.reset();
+        }
+        m_windowOwner = tid;
+        m_windowProc = proc;
+        m_windowFuncFFmpeg = func;
+        m_window = std::make_unique<ProcessorWindow>(m_windowProc, m_windowFuncFFmpeg);
     } else {
         logln("show editor failed: '" << proc->getName() << "' has no editor");
     }
@@ -185,7 +238,8 @@ void App::hideEditor(Thread::ThreadID tid) {
         }
         m_windowOwner = nullptr;
         m_windowProc.reset();
-        m_windowFunc = nullptr;
+        m_windowFuncNative = nullptr;
+        m_windowFuncFFmpeg = nullptr;
     } else {
         logln("failed to hide editor: tid does not match window owner");
     }
@@ -206,24 +260,35 @@ void App::restartEditor() {
     forgetEditorIfNeeded();
     if (m_windowProc != nullptr) {
         logln("recreating processor window");
-        m_window = std::make_unique<ProcessorWindow>(m_windowProc, m_windowFunc);
+        m_window = std::make_unique<ProcessorWindow>(m_windowProc, m_windowFuncNative);
     }
 }
 
 void App::forgetEditorIfNeeded() {
+    // No lock, locked already
     if (m_windowProc != nullptr && m_windowProc->getActiveEditor() == nullptr && m_window != nullptr) {
         logln("forgetting editor");
         m_window->forgetEditor();
     }
 }
 
+void App::updateScreenCaptureArea(int val) {
+    std::lock_guard<std::mutex> lock(m_windowMtx);
+    if (m_windowProc != nullptr && m_window != nullptr) {
+        m_windowProc->updateScreenCaptureArea(val);
+        m_window->updateScreenCaptureArea();
+    }
+}
+
 Point<float> App::localPointToGlobal(Point<float> lp) {
+    std::lock_guard<std::mutex> lock(m_windowMtx);
     if (m_windowProc != nullptr) {
         auto* ed = m_windowProc->getActiveEditor();
         if (ed != nullptr) {
             return ed->localPointToGlobal(lp);
         } else {
             logln("failed to resolve local to global point: processor has no active editor, trying to restart editor");
+            m_windowMtx.unlock();
             restartEditor();
         }
     } else {

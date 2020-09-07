@@ -8,10 +8,11 @@
 #ifndef ScreenWorker_hpp
 #define ScreenWorker_hpp
 
-#include "../JuceLibraryCode/JuceHeader.h"
-#include "Utils.hpp"
-
+#include <JuceHeader.h>
 #include <thread>
+
+#include "Utils.hpp"
+#include "ProcessorChain.hpp"
 
 namespace e47 {
 
@@ -21,17 +22,26 @@ class ScreenWorker : public Thread, public LogTagDelegate {
     virtual ~ScreenWorker();
 
     void init(std::unique_ptr<StreamingSocket> s);
+
     void run();
+    void runNative();
+    void runFFmpeg();
     void shutdown();
 
-    void showEditor(std::shared_ptr<AudioProcessor> proc);
+    void showEditor(std::shared_ptr<AGProcessor> proc);
     void hideEditor();
 
   private:
     std::unique_ptr<StreamingSocket> m_socket;
+
+    // Native capturing
     std::shared_ptr<Image> m_currentImage, m_lastImage, m_diffImage;
+    // FFmpeg capturing
+    std::vector<char> m_imageBuf;
+
     int m_width;
     int m_height;
+    double m_scale;
     bool m_updated = false;
     std::mutex m_currentImageLock;
     std::condition_variable m_currentImageCv;

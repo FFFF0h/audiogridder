@@ -51,7 +51,7 @@ AudioGridderAudioProcessorEditor::AudioGridderAudioProcessorEditor(AudioGridderA
     m_newPluginButton.setButtonText("+");
     m_newPluginButton.setOnClickWithModListener(this);
     addAndMakeVisible(m_pluginScreen);
-    m_pluginScreen.setBounds(200, 1, 100, 100);
+    m_pluginScreen.setBounds(200, SCREENTOOLS_HEIGHT + SCREENTOOLS_MARGIN * 2, 1, 1);
     m_pluginScreen.setWantsKeyboardFocus(true);
     m_pluginScreen.addMouseListener(&m_processor.getClient(), true);
     m_pluginScreen.addKeyListener(&m_processor.getClient());
@@ -76,6 +76,37 @@ AudioGridderAudioProcessorEditor::AudioGridderAudioProcessorEditor(AudioGridderA
     if (active > -1) {
         m_pluginButtons[as<size_t>(active)]->setActive(true);
     }
+
+    m_stPlus.setButtonText("+");
+    m_stPlus.setBounds(201, 1, 1, 1);
+    m_stPlus.setColour(ComboBox::outlineColourId, Colour(DEFAULT_BUTTON_COLOR));
+    m_stPlus.setConnectedEdges(Button::ConnectedOnLeft | Button::ConnectedOnRight | Button::ConnectedOnTop |
+                               Button::ConnectedOnBottom);
+    m_stPlus.addListener(this);
+    addAndMakeVisible(&m_stPlus);
+    m_stMinus.setButtonText("-");
+    m_stMinus.setBounds(201, 1, 1, 1);
+    m_stMinus.setColour(ComboBox::outlineColourId, Colour(DEFAULT_BUTTON_COLOR));
+    m_stMinus.setConnectedEdges(Button::ConnectedOnLeft | Button::ConnectedOnRight | Button::ConnectedOnTop |
+                                Button::ConnectedOnBottom);
+    m_stMinus.addListener(this);
+    addAndMakeVisible(&m_stMinus);
+
+    m_stA.setButtonText("A");
+    m_stA.setBounds(201, 1, 1, 1);
+    m_stA.setConnectedEdges(Button::ConnectedOnLeft | Button::ConnectedOnRight | Button::ConnectedOnTop |
+                            Button::ConnectedOnBottom);
+    m_stA.addListener(this);
+    addAndMakeVisible(&m_stA);
+
+    m_stB.setButtonText("B");
+    m_stB.setBounds(201, 1, 1, 1);
+    m_stB.setConnectedEdges(Button::ConnectedOnLeft | Button::ConnectedOnRight | Button::ConnectedOnTop |
+                            Button::ConnectedOnBottom);
+    m_stB.addListener(this);
+    addAndMakeVisible(&m_stB);
+
+    initStButtons();
 
     setSize(200, 100);
 }
@@ -102,10 +133,23 @@ void AudioGridderAudioProcessorEditor::resized() {
     m_newPluginButton.setBounds(1, top, buttonWidth, buttonHeight);
     top += buttonHeight + 13;
     int windowHeight = jmax(100, top);
-    int windowWidth = 200;
+    int leftBarWidth = 200;
+    int windowWidth = leftBarWidth;
     if (m_processor.getActivePlugin() != -1) {
-        windowHeight = jmax(windowHeight, m_pluginScreen.getHeight());
+        int screenHeight = m_pluginScreen.getHeight() + SCREENTOOLS_HEIGHT;
+        windowHeight = jmax(windowHeight, screenHeight);
         windowWidth += m_pluginScreen.getWidth();
+        m_stMinus.setBounds(windowWidth - SCREENTOOLS_HEIGHT - SCREENTOOLS_MARGIN * 2, SCREENTOOLS_MARGIN,
+                            SCREENTOOLS_HEIGHT, SCREENTOOLS_HEIGHT);
+        m_stPlus.setBounds(windowWidth - SCREENTOOLS_HEIGHT * 2 - SCREENTOOLS_MARGIN * 3, SCREENTOOLS_MARGIN,
+                           SCREENTOOLS_HEIGHT, SCREENTOOLS_HEIGHT);
+        m_stA.setBounds(leftBarWidth + SCREENTOOLS_MARGIN, SCREENTOOLS_MARGIN, SCREENTOOLS_AB_WIDTH,
+                        SCREENTOOLS_HEIGHT);
+        m_stB.setBounds(leftBarWidth + SCREENTOOLS_MARGIN + SCREENTOOLS_AB_WIDTH, SCREENTOOLS_MARGIN,
+                        SCREENTOOLS_AB_WIDTH, SCREENTOOLS_HEIGHT);
+        if (m_currentActiveAB != m_processor.getActivePlugin()) {
+            initStButtons();
+        }
     }
     if (getWidth() != windowWidth || getHeight() != windowHeight) {
         setSize(windowWidth, windowHeight);
@@ -329,6 +373,28 @@ void AudioGridderAudioProcessorEditor::buttonClicked(Button* button, const Modif
     }
 }
 
+void AudioGridderAudioProcessorEditor::buttonClicked(Button* button) {
+    TextButton* tb = reinterpret_cast<TextButton*>(button);
+    if (tb == &m_stPlus) {
+        m_processor.increaseSCArea();
+    } else if (tb == &m_stMinus) {
+        m_processor.decreaseSCArea();
+    } else if (tb == &m_stA || tb == &m_stB) {
+        m_currentActiveAB = m_processor.getActivePlugin();
+        if (isHilightedStButton(&m_stB)) {
+            m_processor.storeSettingsB();
+            m_processor.restoreSettingsA();
+            hilightStButton(&m_stA);
+            enableStButton(&m_stB);
+        } else {
+            m_processor.storeSettingsA();
+            m_processor.restoreSettingsB();
+            hilightStButton(&m_stB);
+            enableStButton(&m_stA);
+        }
+    }
+}
+
 Button* AudioGridderAudioProcessorEditor::addPluginButton(const String& id, const String& name) {
     int num = 0;
     for (auto& plug : m_pluginButtons) {
@@ -382,7 +448,7 @@ void AudioGridderAudioProcessorEditor::focusOfChildComponentChanged(FocusChangeT
 void AudioGridderAudioProcessorEditor::setConnected(bool connected) {
     m_connected = connected;
     if (connected) {
-        String srvTxt = m_processor.getClient().getServerHostAndID();
+        String srvTxt = m_processor.getActiveServerName();
         srvTxt << " (+" << m_processor.getLatencyMillis() << "ms)";
         m_srvLabel.setText(srvTxt, NotificationType::dontSendNotification);
         auto& plugins = m_processor.getLoadedPlugins();
@@ -434,22 +500,43 @@ void AudioGridderAudioProcessorEditor::mouseUp(const MouseEvent& event) {
     m.addSubMenu("Buffer Size", bufMenu);
     m.addSectionHeader("Servers");
     auto& servers = m_processor.getServers();
-    for (int i = 0; as<size_t>(i) < servers.size(); i++) {
-        if (i == m_processor.getActiveServer()) {
+    auto active = m_processor.getActiveServerHost();
+    for (auto s : servers) {
+        if (s == active) {
             PopupMenu srvMenu;
             srvMenu.addItem("Reconnect", [this] { m_processor.getClient().reconnect(); });
-            m.addSubMenu(servers[as<size_t>(i)], srvMenu, true, nullptr, true, 0);
+            m.addSubMenu(s, srvMenu, true, nullptr, true, 0);
         } else {
             PopupMenu srvMenu;
-            srvMenu.addItem("Connect", [this, i] {
-                m_processor.setActiveServer(i);
+            srvMenu.addItem("Connect", [this, s] {
+                m_processor.setActiveServer(s);
                 m_processor.saveConfig();
             });
-            srvMenu.addItem("Remove", [this, i] {
-                m_processor.delServer(i);
+            srvMenu.addItem("Remove", [this, s] {
+                m_processor.delServer(s);
                 m_processor.saveConfig();
             });
-            m.addSubMenu(servers[as<size_t>(i)], srvMenu);
+            m.addSubMenu(s, srvMenu);
+        }
+    }
+    auto serversMDNS = m_processor.getServersMDNS();
+    if (serversMDNS.size() > 0) {
+        for (auto s : serversMDNS) {
+            if (servers.contains(s.getHostAndID())) {
+                continue;
+            }
+            if (s.getHostAndID() == active) {
+                PopupMenu srvMenu;
+                srvMenu.addItem("Reconnect", [this] { m_processor.getClient().reconnect(); });
+                m.addSubMenu(s.getNameAndID(), srvMenu, true, nullptr, true, 0);
+            } else {
+                PopupMenu srvMenu;
+                srvMenu.addItem("Connect", [this, s] {
+                    m_processor.setActiveServer(s);
+                    m_processor.saveConfig();
+                });
+                m.addSubMenu(s.getNameAndID(), srvMenu);
+            }
         }
     }
     m.addSeparator();
@@ -457,7 +544,7 @@ void AudioGridderAudioProcessorEditor::mouseUp(const MouseEvent& event) {
         auto w = new NewServerWindow(as<float>(getScreenX() + 2), as<float>(getScreenY() + 30));
         w->onOk([this](String server) {
             m_processor.addServer(server);
-            m_processor.setActiveServer(as<int>(m_processor.getServers().size() - 1));
+            m_processor.setActiveServer(server);
             m_processor.saveConfig();
         });
         w->setAlwaysOnTop(true);
@@ -465,3 +552,28 @@ void AudioGridderAudioProcessorEditor::mouseUp(const MouseEvent& event) {
     });
     m.showAt(&m_srvIcon);
 }
+
+void AudioGridderAudioProcessorEditor::initStButtons() {
+    enableStButton(&m_stA);
+    disableStButton(&m_stB);
+    m_processor.resetSettingsAB();
+    m_hilightedStButton = nullptr;
+}
+
+void AudioGridderAudioProcessorEditor::enableStButton(TextButton* b) {
+    b->setColour(PluginButton::textColourOffId, Colours::white);
+    b->setColour(ComboBox::outlineColourId, Colour(DEFAULT_BUTTON_COLOR));
+}
+
+void AudioGridderAudioProcessorEditor::disableStButton(TextButton* b) {
+    b->setColour(PluginButton::textColourOffId, Colours::grey);
+    b->setColour(ComboBox::outlineColourId, Colour(DEFAULT_BUTTON_COLOR));
+}
+
+void AudioGridderAudioProcessorEditor::hilightStButton(TextButton* b) {
+    b->setColour(PluginButton::textColourOffId, Colours::yellow);
+    b->setColour(ComboBox::outlineColourId, Colours::yellow);
+    m_hilightedStButton = b;
+}
+
+bool AudioGridderAudioProcessorEditor::isHilightedStButton(TextButton* b) { return b == m_hilightedStButton; }

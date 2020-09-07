@@ -121,6 +121,9 @@ void Worker::run() {
                     case GetPluginSettings::Type:
                         handleMessage(Message<Any>::convert<GetPluginSettings>(msg));
                         break;
+                    case SetPluginSettings::Type:
+                        handleMessage(Message<Any>::convert<SetPluginSettings>(msg));
+                        break;
                     case BypassPlugin::Type:
                         handleMessage(Message<Any>::convert<BypassPlugin>(msg));
                         break;
@@ -141,6 +144,9 @@ void Worker::run() {
                         break;
                     case GetParameterValue::Type:
                         handleMessage(Message<Any>::convert<GetParameterValue>(msg));
+                        break;
+                    case UpdateScreenCaptureArea::Type:
+                        handleMessage(Message<Any>::convert<UpdateScreenCaptureArea>(msg));
                         break;
                     default:
                         logln("unknown message type " << msg->getType());
@@ -190,7 +196,7 @@ void Worker::handleMessage(std::shared_ptr<Message<AddPlugin>> msg) {
         return;
     }
     logln("sending presets...");
-    auto proc = m_audio.getProcessor(m_audio.getSize() - 1);
+    auto proc = m_audio.getProcessor(m_audio.getSize() - 1)->getPlugin();
     String presets;
     bool first = true;
     for (int i = 0; i < proc->getNumPrograms(); i++) {
@@ -312,17 +318,54 @@ void Worker::handleMessage(std::shared_ptr<Message<GetPluginSettings>> msg) {
     }
 }
 
+void Worker::handleMessage(std::shared_ptr<Message<SetPluginSettings>> msg) {
+    auto proc = m_audio.getProcessor(pPLD(msg).getNumber());
+    if (nullptr != proc) {
+        Message<PluginSettings> msgSettings;
+        if (!msgSettings.read(m_client.get())) {
+            logln("failed to read PluginSettings message");
+            m_client->close();
+            return;
+        }
+        if (*msgSettings.payload.size > 0) {
+            MemoryBlock block;
+            block.append(msgSettings.payload.data, as<size_t>(*msgSettings.payload.size));
+            proc->setStateInformation(block.getData(), static_cast<int>(block.getSize()));
+        }
+    }
+}
+
 void Worker::handleMessage(std::shared_ptr<Message<BypassPlugin>> msg) {
     auto proc = m_audio.getProcessor(pPLD(msg).getNumber());
     if (nullptr != proc) {
-        proc->suspendProcessing(true);
+        bool runOnMsgThread = false;
+        if (m_shouldHideEditor) {
+            m_screen.hideEditor();
+            m_shouldHideEditor = false;
+            // Hiding an editor has to run on the msg thread. This has to be finished before unloading the plugin. By
+            // adding a task to the message queue, we can ensure this.
+            runOnMsgThread = true;
+        }
+        auto unloadfunc = [this, proc] {
+            proc->unload();
+            m_audio.update();
+        };
+        if (runOnMsgThread) {
+            MessageManager::callAsync(unloadfunc);
+        } else {
+            unloadfunc();
+        }
     }
 }
 
 void Worker::handleMessage(std::shared_ptr<Message<UnbypassPlugin>> msg) {
     auto proc = m_audio.getProcessor(pPLD(msg).getNumber());
     if (nullptr != proc) {
-        proc->suspendProcessing(false);
+        if (proc->load()) {
+            m_audio.update();
+        } else {
+            logln("unbypass failed: can't load plugin");
+        }
     }
 }
 
@@ -341,14 +384,20 @@ void Worker::handleMessage(std::shared_ptr<Message<RecentsList>> msg) {
 }
 
 void Worker::handleMessage(std::shared_ptr<Message<Preset>> msg) {
-    m_audio.getProcessor(pDATA(msg)->idx)->setCurrentProgram(pDATA(msg)->preset);
+    auto p = m_audio.getProcessor(pDATA(msg)->idx)->getPlugin();
+    if (nullptr != p) {
+        p->setCurrentProgram(pDATA(msg)->preset);
+    }
 }
 
 void Worker::handleMessage(std::shared_ptr<Message<ParameterValue>> msg) {
-    for (auto* p : m_audio.getProcessor(pDATA(msg)->idx)->getParameters()) {
-        if (pDATA(msg)->paramIdx == p->getParameterIndex()) {
-            p->setValue(pDATA(msg)->value);
-            return;
+    auto p = m_audio.getProcessor(pDATA(msg)->idx)->getPlugin();
+    if (nullptr != p) {
+        for (auto* param : p->getParameters()) {
+            if (pDATA(msg)->paramIdx == param->getParameterIndex()) {
+                param->setValue(pDATA(msg)->value);
+                return;
+            }
         }
     }
 }
@@ -359,6 +408,10 @@ void Worker::handleMessage(std::shared_ptr<Message<GetParameterValue>> msg) {
     DATA(ret)->paramIdx = pDATA(msg)->paramIdx;
     DATA(ret)->value = m_audio.getParameterValue(pDATA(msg)->idx, pDATA(msg)->paramIdx);
     ret.send(m_client.get());
+}
+
+void Worker::handleMessage(std::shared_ptr<Message<UpdateScreenCaptureArea>> msg) {
+    getApp()->updateScreenCaptureArea(pPLD(msg).getNumber());
 }
 
 }  // namespace e47

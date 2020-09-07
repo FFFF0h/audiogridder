@@ -7,12 +7,12 @@
 
 #pragma once
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
+#include <set>
+
 #include "Client.hpp"
 #include "NumberConversion.hpp"
 #include "Utils.hpp"
-
-#include <set>
 
 class AudioGridderAudioProcessor : public AudioProcessor, public e47::LogTagDelegate {
   public:
@@ -87,12 +87,24 @@ class AudioGridderAudioProcessor : public AudioProcessor, public e47::LogTagDele
     void exchangePlugins(int idxA, int idxB);
     bool enableParamAutomation(int idx, int paramIdx, int slot = -1);
     void disableParamAutomation(int idx, int paramIdx);
+    void increaseSCArea();
+    void decreaseSCArea();
+
+    const int SCAREA_STEPS = 30;
+
+    void storeSettingsA();
+    void storeSettingsB();
+    void restoreSettingsA();
+    void restoreSettingsB();
+    void resetSettingsAB();
 
     auto& getServers() const { return m_servers; }
-    void addServer(const String& s) { m_servers.push_back(s); }
-    void delServer(int idx);
-    int getActiveServer() const { return m_activeServer; }
-    void setActiveServer(int i);
+    void addServer(const String& s) { m_servers.add(s); }
+    void delServer(const String& s);
+    String getActiveServerHost() const { return m_client->getServerHostAndID(); }
+    String getActiveServerName() const;
+    void setActiveServer(const e47::ServerString& s);
+    Array<e47::ServerString> getServersMDNS();
 
     int getLatencyMillis() const {
         return e47::as<int>(lround(m_client->NUM_OF_BUFFERS * getBlockSize() * 1000 / getSampleRate()));
@@ -135,8 +147,7 @@ class AudioGridderAudioProcessor : public AudioProcessor, public e47::LogTagDele
     std::unique_ptr<e47::Client> m_client;
     std::vector<LoadedPlugin> m_loadedPlugins;
     int m_activePlugin = -1;
-    std::vector<String> m_servers;
-    int m_activeServer = 0;
+    StringArray m_servers;
 
     int m_numberOfAutomationSlots = 16;
     LoadedPlugin m_unusedDummyPlugin;
@@ -145,6 +156,8 @@ class AudioGridderAudioProcessor : public AudioProcessor, public e47::LogTagDele
     Array<Array<float>> m_bypassBufferF;
     Array<Array<double>> m_bypassBufferD;
     std::mutex m_bypassBufferMtx;
+
+    String m_settingsA, m_settingsB;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioGridderAudioProcessor)
 };

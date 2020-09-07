@@ -8,7 +8,7 @@
 #ifndef ServerSettingsWindow_hpp
 #define ServerSettingsWindow_hpp
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
 
 namespace e47 {
 
@@ -24,10 +24,11 @@ class ServerSettingsWindow : public DocumentWindow {
   private:
     App* m_app;
     std::vector<std::unique_ptr<Component>> m_components;
-    TextEditor m_idText, m_screenJpgQuality, m_vst2Folders, m_vst3Folders;
+    TextEditor m_idText, m_nameText, m_screenJpgQuality, m_vst2Folders, m_vst3Folders;
     ToggleButton m_auSupport, m_vst3Support, m_vst2Support, m_screenDiffDetection;
     TextButton m_saveButton;
-    Label m_screenJpgQualityLbl;
+    Label m_screenJpgQualityLbl, m_screenDiffDetectionLbl;
+    ComboBox m_screenCapturingMode;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ServerSettingsWindow)
 };

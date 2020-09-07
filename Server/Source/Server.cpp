@@ -14,6 +14,8 @@
 #include "Version.hpp"
 #include "App.hpp"
 #include "Metrics.hpp"
+#include "ServiceResponder.hpp"
+#include "ScreenRecorder.hpp"
 
 namespace e47 {
 
@@ -21,6 +23,8 @@ using json = nlohmann::json;
 
 Server::Server() : Thread("Server"), LogTag("server") {
     logln("starting server (version: " << AUDIOGRIDDER_VERSION << ")...");
+    File runFile(SERVER_RUN_FILE);
+    runFile.create();
     loadConfig();
     TimeStatistics::initialize();
 }
@@ -33,6 +37,9 @@ void Server::loadConfig() {
         json j = json::parse(fis.readEntireStreamAsString().toStdString());
         if (j.find("ID") != j.end()) {
             m_id = j["ID"].get<int>();
+        }
+        if (j.find("NAME") != j.end()) {
+            m_name = j["NAME"].get<std::string>();
         }
         if (j.find("AU") != j.end()) {
             m_enableAU = j["AU"].get<bool>();
@@ -66,12 +73,30 @@ void Server::loadConfig() {
                 }
             }
         }
-        if (j.find("ScreenQuality") != j.end()) {
-            m_screenJpgQuality = j["ScreenQuality"].get<float>();
+        if (j.find("ScreenCapturingFFmpeg") != j.end()) {
+            m_screenCapturingFFmpeg = j["ScreenCapturingFFmpeg"].get<bool>();
         }
+        if (j.find("ScreenCapturingOff") != j.end()) {
+            m_screenCapturingOff = j["ScreenCapturingOff"].get<bool>();
+        }
+        String scmode;
+        if (m_screenCapturingOff) {
+            scmode = "off";
+        } else if (m_screenCapturingFFmpeg) {
+            scmode = "ffmpeg";
+            MessageManager::callAsync([] { ScreenRecorder::initialize(); });
+        } else {
+            scmode = "native";
+        }
+        logln("screen capturing mode: " << scmode);
         if (j.find("ScreenDiffDetection") != j.end()) {
             m_screenDiffDetection = j["ScreenDiffDetection"].get<bool>();
-            logln("screen capture difference detection " << (m_screenDiffDetection ? "enabled" : "disabled"));
+            if (!m_screenCapturingFFmpeg && !m_screenCapturingOff) {
+                logln("screen capture difference detection " << (m_screenDiffDetection ? "enabled" : "disabled"));
+            }
+        }
+        if (j.find("ScreenQuality") != j.end()) {
+            m_screenJpgQuality = j["ScreenQuality"].get<float>();
         }
         m_pluginexclude.clear();
         if (j.find("ExcludePlugins") != j.end()) {
@@ -96,6 +121,7 @@ void Server::saveConfig() {
     logln("saving config");
     json j;
     j["ID"] = m_id;
+    j["NAME"] = m_name.toStdString();
     j["AU"] = m_enableAU;
     j["VST"] = m_enableVST3;
     j["VST3Folders"] = json::array();
@@ -107,6 +133,8 @@ void Server::saveConfig() {
     for (auto& f : m_vst2Folders) {
         j["VST2Folders"].push_back(f.toStdString());
     }
+    j["ScreenCapturingFFmpeg"] = m_screenCapturingFFmpeg;
+    j["ScreenCapturingOff"] = m_screenCapturingOff;
     j["ScreenQuality"] = m_screenJpgQuality;
     j["ScreenDiffDetection"] = m_screenDiffDetection;
     j["ExcludePlugins"] = json::array();
@@ -145,7 +173,10 @@ Server::~Server() {
     waitForThreadAndLog(this, this);
     m_pluginlist.clear();
     TimeStatistics::cleanup();
+    ServiceResponder::cleanup();
     logln("server terminated");
+    File runFile(SERVER_RUN_FILE);
+    runFile.deleteFile();
 }
 
 void Server::shutdown() {
@@ -157,6 +188,12 @@ void Server::shutdown() {
         w->waitForThreadToExit(-1);
     }
     signalThreadShouldExit();
+}
+
+void Server::setName(const String& name) {
+    m_name = name;
+    ServiceResponder::setHostName(name);
+    logln("setting server name to " << name);
 }
 
 bool Server::shouldExclude(const String& name) {
@@ -336,9 +373,16 @@ void Server::run() {
     setsockopt(m_masterSocket.getRawSocketHandle(), SOL_SOCKET, SO_NOSIGPIPE, nullptr, 0);
 #endif
 
+    ServiceResponder::initialize(m_port + m_id, m_id, m_name);
+
+    if (m_name.isEmpty()) {
+        m_name = ServiceResponder::getHostName();
+        saveConfig();
+    }
+
     logln("creating listener " << (m_host.length() == 0 ? "*" : m_host) << ":" << (m_port + m_id));
     if (m_masterSocket.createListener(m_port + m_id, m_host)) {
-        logln("server started: ID=" << m_id << ", PORT=" << m_port + m_id);
+        logln("server started: ID=" << m_id << ", PORT=" << m_port + m_id << ", NAME=" << m_name);
         while (!currentThreadShouldExit()) {
             auto* clnt = m_masterSocket.waitForNextConnection();
             if (nullptr != clnt) {

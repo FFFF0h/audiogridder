@@ -8,14 +8,14 @@
 #ifndef Server_hpp
 #define Server_hpp
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
+#include <set>
+#include <thread>
+
 #include "Worker.hpp"
 #include "Defaults.hpp"
 #include "ProcessorChain.hpp"
 #include "Utils.hpp"
-
-#include <set>
-#include <thread>
 
 namespace e47 {
 
@@ -28,6 +28,8 @@ class Server : public Thread, public LogTag {
     void saveConfig();
     int getId() const { return m_id; }
     void setId(int i) { m_id = i; }
+    const String& getName() const { return m_name; }
+    void setName(const String& name);
     bool getEnableAU() const { return m_enableAU; }
     void setEnableAU(bool b) { m_enableAU = b; }
     bool getEnableVST3() const { return m_enableVST3; }
@@ -42,6 +44,10 @@ class Server : public Thread, public LogTag {
     void setScreenQuality(float q) { m_screenJpgQuality = q; }
     bool getScreenDiffDetection() const { return m_screenDiffDetection; }
     void setScreenDiffDetection(bool b) { m_screenDiffDetection = b; }
+    bool getScreenCapturingFFmpeg() const { return m_screenCapturingFFmpeg; }
+    void setScreenCapturingFFmpeg(bool b) { m_screenCapturingFFmpeg = b; }
+    bool getScreenCapturingOff() const { return m_screenCapturingOff; }
+    void setScreenCapturingOff(bool b) { m_screenCapturingOff = b; }
     void run();
     const KnownPluginList& getPluginList() const { return m_pluginlist; }
     KnownPluginList& getPluginList() { return m_pluginlist; }
@@ -57,6 +63,7 @@ class Server : public Thread, public LogTag {
     String m_host;
     int m_port = DEFAULT_SERVER_PORT;
     int m_id = 0;
+    String m_name;
     StreamingSocket m_masterSocket;
     using WorkerList = Array<std::unique_ptr<Worker>>;
     WorkerList m_workers;
@@ -67,6 +74,8 @@ class Server : public Thread, public LogTag {
     bool m_enableVST2 = true;
     float m_screenJpgQuality = 0.9f;
     bool m_screenDiffDetection = true;
+    bool m_screenCapturingFFmpeg = true;
+    bool m_screenCapturingOff = false;
     StringArray m_vst3Folders;
     StringArray m_vst2Folders;
 

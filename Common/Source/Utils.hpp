@@ -38,16 +38,43 @@
 
 #endif
 
+#define setLogTagStatic(t) auto getLogTag = [] { return LogTag::getTaggedStr(t, "static"); };
+
 namespace e47 {
 
 class LogTag {
   public:
     LogTag(const String& name) : m_name(name) {}
-    String getLogTag() const {
-        String tag = m_name;
-        tag << ":" << (uint64)this;
+
+    static String getStrWithLeadingZero(int n, int digits = 2) {
+        String s = "";
+        while (--digits > 0) {
+            if (n < pow(10, digits)) {
+                s << "0";
+            }
+        }
+        s << n;
+        return s;
+    }
+
+    static String getTimeStr() {
+        auto now = Time::getCurrentTime();
+        auto H = getStrWithLeadingZero(now.getHours());
+        auto M = getStrWithLeadingZero(now.getMinutes());
+        auto S = getStrWithLeadingZero(now.getSeconds());
+        auto m = getStrWithLeadingZero(now.getMilliseconds(), 3);
+        String ret = "";
+        ret << H << ":" << M << ":" << S << "." << m;
+        return ret;
+    }
+
+    static String getTaggedStr(const String& name, const String& ptr) {
+        String tag = "";
+        tag << getTimeStr() << "|" << name << "|" << ptr;
         return tag;
     }
+
+    String getLogTag() const { return getTaggedStr(m_name, String((uint64)this)); }
 
   private:
     String m_name;
@@ -55,6 +82,8 @@ class LogTag {
 
 class LogTagDelegate {
   public:
+    LogTagDelegate() {}
+    LogTagDelegate(LogTag* r) : m_logTagSrc(r) {}
     LogTag* m_logTagSrc;
     void setLogTagSource(LogTag* r) { m_logTagSrc = r; }
     LogTag* getLogTagSource() const { return m_logTagSrc; }
@@ -78,6 +107,85 @@ static inline void waitForThreadAndLog(LogTag* tag, Thread* t, int millisUntilWa
     } else {
         t->waitForThreadToExit(-1);
     }
+}
+
+class ServerString {
+  public:
+    ServerString() {}
+
+    ServerString(const String& s) {
+        auto hostParts = StringArray::fromTokens(s, ":", "");
+        if (hostParts.size() > 1) {
+            m_host = hostParts[0];
+            m_id = hostParts[1].getIntValue();
+            if (hostParts.size() > 2) {
+                m_name = hostParts[2];
+            }
+        } else {
+            m_host = s;
+            m_id = 0;
+        }
+    }
+
+    ServerString(const String& host, const String& name, int id) : m_host(host), m_name(name), m_id(id) {}
+
+    ServerString(const ServerString& other) : m_host(other.m_host), m_name(other.m_name), m_id(other.m_id) {}
+
+    bool operator==(const ServerString& other) const {
+        return m_host == other.m_host && m_name == other.m_name && m_id == other.m_id;
+    }
+
+    const String& getHost() const { return m_host; }
+    const String& getName() const { return m_name; }
+    int getID() const { return m_id; }
+
+    String getHostAndID() const {
+        String ret = m_host;
+        if (m_id > 0) {
+            ret << ":" << m_id;
+        }
+        return ret;
+    }
+
+    String getNameAndID() const {
+        String ret = m_name;
+        if (m_id > 0) {
+            ret << ":" << m_id;
+        }
+        return ret;
+    }
+
+    String toString() const {
+        String ret = "Server(";
+        ret << "name=" << m_name << ", ";
+        ret << "host=" << m_host << ", ";
+        ret << "id=" << m_id << ")";
+        return ret;
+    }
+
+    String serialize() const {
+        String ret = m_host;
+        ret << ":" << m_id << ":" << m_name;
+        return ret;
+    }
+
+  private:
+    String m_host, m_name;
+    int m_id;
+};
+
+inline void callOnMessageThread(std::function<void()> fn) {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool done = false;
+    MessageManager::callAsync([&] {
+        std::lock_guard<std::mutex> lock(mtx);
+        fn();
+        done = true;
+        cv.notify_one();
+    });
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait(lock, [&done] { return done; });
 }
 
 }  // namespace e47

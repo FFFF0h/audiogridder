@@ -8,13 +8,13 @@
 #ifndef Worker_hpp
 #define Worker_hpp
 
-#include "../JuceLibraryCode/JuceHeader.h"
+#include <JuceHeader.h>
+#include <thread>
+
 #include "AudioWorker.hpp"
 #include "Message.hpp"
 #include "ScreenWorker.hpp"
 #include "Utils.hpp"
-
-#include <thread>
 
 namespace e47 {
 
@@ -36,6 +36,7 @@ class Worker : public Thread, public LogTag {
     void handleMessage(std::shared_ptr<Message<Mouse>> msg);
     void handleMessage(std::shared_ptr<Message<Key>> msg);
     void handleMessage(std::shared_ptr<Message<GetPluginSettings>> msg);
+    void handleMessage(std::shared_ptr<Message<SetPluginSettings>> msg);
     void handleMessage(std::shared_ptr<Message<BypassPlugin>> msg);
     void handleMessage(std::shared_ptr<Message<UnbypassPlugin>> msg);
     void handleMessage(std::shared_ptr<Message<ExchangePlugins>> msg);
@@ -43,6 +44,7 @@ class Worker : public Thread, public LogTag {
     void handleMessage(std::shared_ptr<Message<Preset>> msg);
     void handleMessage(std::shared_ptr<Message<ParameterValue>> msg);
     void handleMessage(std::shared_ptr<Message<GetParameterValue>> msg);
+    void handleMessage(std::shared_ptr<Message<UpdateScreenCaptureArea>> msg);
 
   private:
     std::unique_ptr<StreamingSocket> m_client;
